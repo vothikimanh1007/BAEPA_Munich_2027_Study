@@ -1,3 +1,10 @@
+"""
+03_network_bridges.py
+---------------------
+Part of: Reconstructing Inter-Regional Transmission and Material Bridges in Asian Buddhist Epigraphy and Portable Icons
+Repository: BAEPA_Munich_2027_Study
+"""
+
 import os
 import numpy as np
 import pandas as pd
@@ -5,40 +12,15 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 
-def build_simplicial_skeleton(df: pd.DataFrame, dist_mat: np.ndarray, epsilon: float) -> nx.Graph:
-    """Construct the 1-skeleton graph G(X, epsilon) from pairwise distance matrix."""
-    n = len(df)
-    G = nx.Graph()
-    for i in range(n):
-        G.add_node(
-            i,
-            artifact_id=df.iloc[i]["artifact_id"],
-            partition=df.iloc[i]["corpus_partition"],
-            source=df.iloc[i]["source"],
-            title=df.iloc[i]["title"],
-            material=df.iloc[i]["material"],
-        )
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if dist_mat[i, j] <= epsilon:
-                G.add_edge(i, j, weight=float(dist_mat[i, j]))
-
-    cb = nx.betweenness_centrality(G, weight="weight")
-    nx.set_node_attributes(G, cb, "betweenness")
-    return G
-
-
 def extract_cross_corpus_bridges(df: pd.DataFrame, dist_mat: np.ndarray, delta: float = 0.05) -> pd.DataFrame:
-    """Identify minimum inter-corpus distance D_min and top bridging artifacts at epsilon*."""
     n = len(df)
     cross_pairs = []
     min_dist = float("inf")
 
     for i in range(n):
         for j in range(i + 1, n):
-            p_i = df.iloc[i]["corpus_partition"]
-            p_j = df.iloc[j]["corpus_partition"]
+            p_i = df.iloc[i]["partition"]
+            p_j = df.iloc[j]["partition"]
             if (p_i == "DHARMA" and p_j in ["VA", "CMA"]) or (p_j == "DHARMA" and p_i in ["VA", "CMA"]):
                 d = float(dist_mat[i, j])
                 cross_pairs.append((d, i, j))
@@ -48,7 +30,17 @@ def extract_cross_corpus_bridges(df: pd.DataFrame, dist_mat: np.ndarray, delta: 
     epsilon_star = min_dist + delta
     print(f"[03_network_bridges] Empirical D_min = {min_dist:.4f} | Horizon epsilon* = {epsilon_star:.4f}")
 
-    G = build_simplicial_skeleton(df, dist_mat, epsilon_star)
+    G = nx.Graph()
+    for i in range(n):
+        G.add_node(i, artifact_id=df.iloc[i]["artifact_id"], partition=df.iloc[i]["partition"], title=df.iloc[i]["title"])
+    for i in range(n):
+        for j in range(i + 1, n):
+            if dist_mat[i, j] <= epsilon_star:
+                G.add_edge(i, j, weight=float(dist_mat[i, j]))
+
+    cb = nx.betweenness_centrality(G, weight="weight")
+    nx.set_node_attributes(G, cb, "betweenness")
+
     bridges = []
     for d, u, v in sorted(cross_pairs, key=lambda x: x[0]):
         if d <= epsilon_star:
@@ -58,27 +50,23 @@ def extract_cross_corpus_bridges(df: pd.DataFrame, dist_mat: np.ndarray, delta: 
             bridges.append({
                 "dharma_id": G.nodes[d_node]["artifact_id"],
                 "dharma_title": G.nodes[d_node]["title"],
-                "bronze_partition": G.nodes[b_node]["partition"],
-                "bronze_id": G.nodes[b_node]["artifact_id"],
-                "bronze_title": G.nodes[b_node]["title"],
+                "museum_partition": G.nodes[b_node]["partition"],
+                "museum_id": G.nodes[b_node]["artifact_id"],
+                "museum_title": G.nodes[b_node]["title"],
                 "distance_Dij": round(d, 4),
                 "betweenness_CB": round(G.nodes[b_node]["betweenness"], 4),
-                "epsilon_star": round(epsilon_star, 4),
             })
 
     df_bridges = pd.DataFrame(bridges)
     if not df_bridges.empty:
-        df_bridges = df_bridges.sort_values(
-            by=["betweenness_CB", "distance_Dij"], ascending=[False, True]
-        ).reset_index(drop=True)
+        df_bridges = df_bridges.sort_values(by=["betweenness_CB", "distance_Dij"], ascending=[False, True]).reset_index(drop=True)
     return df_bridges
 
 
 def generate_tripartite_network_figure(df: pd.DataFrame, dist_mat: np.ndarray, figures_dir: str):
-    """Render Figure 3: Balanced 45-node tripartite simplicial network."""
-    idx_sea = df[df["corpus_partition"] == "DHARMA"].index[:15]
-    idx_va = df[df["corpus_partition"] == "VA"].index[:15]
-    idx_cma = df[df["corpus_partition"] == "CMA"].index[:15]
+    idx_sea = df[df["partition"] == "DHARMA"].index[:15]
+    idx_va = df[df["partition"] == "VA"].index[:15]
+    idx_cma = df[df["partition"] == "CMA"].index[:15]
     sel_indices = np.concatenate([idx_sea, idx_va, idx_cma])
 
     sample_df = df.iloc[sel_indices].reset_index(drop=True)
@@ -89,7 +77,7 @@ def generate_tripartite_network_figure(df: pd.DataFrame, dist_mat: np.ndarray, f
 
     for idx, row in sample_df.iterrows():
         node_id = f"[{idx+1}] {str(row['title'])[:11]}"
-        G.add_node(node_id, color=color_map.get(row["corpus_partition"], "#7f8c8d"))
+        G.add_node(node_id, color=color_map.get(row["partition"], "#7f8c8d"))
 
     for i in range(len(sample_df)):
         neighbors = np.argsort(sample_dist[i])[1:4]
