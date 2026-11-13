@@ -1,3 +1,10 @@
+"""
+02_persistent_homology.py
+-------------------------
+Part of: Reconstructing Inter-Regional Transmission and Material Bridges in Asian Buddhist Epigraphy and Portable Icons
+Repository: BAEPA_Munich_2027_Study
+"""
+
 import os
 import numpy as np
 import pandas as pd
@@ -5,43 +12,35 @@ import matplotlib.pyplot as plt
 
 from ripser import ripser
 from persim import plot_diagrams
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import TruncatedSVD
-from sklearn.preprocessing import normalize, OneHotEncoder, MinMaxScaler
+from sklearn.preprocessing import normalize, OneHotEncoder, StandardScaler
 from scipy.spatial.distance import pdist, squareform
 
 
-def compute_multimodal_distance_matrix(
-    df: pd.DataFrame,
-    max_features: int = 350,
-    n_components: int = 22,
-    seed: int = 42,
-) -> np.ndarray:
-    """Construct L2-normalized multi-modal latent representations and Euclidean distance matrix."""
-    tfidf = TfidfVectorizer(
-        max_features=max_features,
-        sublinear_tf=True,
-        ngram_range=(1, 2),
-        stop_words="english",
-    )
-    X_tfidf = tfidf.fit_transform(df["text_content"].fillna("")).toarray()
-
-    d = min(n_components, X_tfidf.shape[1] - 1)
-    svd = TruncatedSVD(n_components=d, random_state=seed)
-    v_textual = svd.fit_transform(X_tfidf)
-
+def compute_structured_distance_matrix(df: pd.DataFrame, seed: int = 42) -> np.ndarray:
+    """Construct multi-modal structured feature representations (d=17) and Euclidean distance matrix."""
     ohe = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-    v_material = ohe.fit_transform(df[["material"]].fillna("Unknown"))
+    B_icon = ohe.fit_transform(df[["iconography_class"]])
+    B_mat = ohe.fit_transform(df[["material_clean"]])
+    B_reg = ohe.fit_transform(df[["macro_region"]])
 
-    scaler = MinMaxScaler()
-    v_spatio_chrono = scaler.fit_transform(df[["dating_year"]].fillna(850.0))
+    scaler = StandardScaler()
+    yr_scaled = scaler.fit_transform(df[["year_ce"]])
+    dated_flag = df[["is_dated"]].astype(float).values
+    B_time = np.hstack([yr_scaled, dated_flag])
 
-    X_modal = np.hstack([
-        0.60 * v_textual,
-        0.25 * v_material,
-        0.15 * v_spatio_chrono,
+    # Unit Frobenius norm scaling per block
+    B_icon = B_icon / (np.sqrt(B_icon.shape[1]) + 1e-12)
+    B_mat = B_mat / (np.sqrt(B_mat.shape[1]) + 1e-12)
+    B_reg = B_reg / (np.sqrt(B_reg.shape[1]) + 1e-12)
+    B_time = B_time / (np.sqrt(B_time.shape[1]) + 1e-12)
+
+    X_struct = np.hstack([
+        0.40 * B_icon,
+        0.25 * B_mat,
+        0.20 * B_reg,
+        0.15 * B_time
     ])
-    Z = normalize(X_modal, norm="l2")
+    Z = normalize(X_struct, norm="l2")
 
     dist_mat = squareform(pdist(Z, metric="euclidean"))
     rng = np.random.default_rng(seed)
@@ -54,15 +53,6 @@ def compute_multimodal_distance_matrix(
     return dist_mat
 
 
-def compute_transmission_profile(intervals: np.ndarray, grid: np.ndarray) -> np.ndarray:
-    """Evaluate Betti curves across filtration grid scales."""
-    counts = np.zeros(len(grid), dtype=int)
-    for b, d in intervals:
-        death = grid[-1] if np.isinf(d) else d
-        counts += ((grid >= b) & (grid < death)).astype(int)
-    return counts
-
-
 def run_persistent_homology(base_data_dir: str = "../data", figures_dir: str = "../figures"):
     os.makedirs(figures_dir, exist_ok=True)
     processed_dir = os.path.join(base_data_dir, "processed_data")
@@ -70,7 +60,7 @@ def run_persistent_homology(base_data_dir: str = "../data", figures_dir: str = "
 
     df = pd.read_csv(corpus_csv)
     total_count = len(df)
-    dist_mat = compute_multimodal_distance_matrix(df)
+    dist_mat = compute_structured_distance_matrix(df)
     np.save(os.path.join(processed_dir, "pairwise_distance_matrix.npy"), dist_mat)
 
     ripser_res = ripser(dist_mat, distance_matrix=True, maxdim=1)
@@ -85,9 +75,8 @@ def run_persistent_homology(base_data_dir: str = "../data", figures_dir: str = "
     )
 
     print(f"[02_persistent_homology] Total H0 classes: {len(h0)} | Total H1 loops: {len(h1)}")
-    print(f"[02_persistent_homology] Prominent H1 loops (death > 0.85): {np.sum(h1[:, 1] > 0.85)}")
 
-    # Figure 1
+    # Figure 1: Persistence Profile
     fig = plt.figure(figsize=(8.5, 7.5))
     ax = fig.add_axes([0.12, 0.16, 0.80, 0.75])
     plot_diagrams(dgms, ax=ax, show=False)
@@ -99,25 +88,7 @@ def run_persistent_homology(base_data_dir: str = "../data", figures_dir: str = "
     plt.savefig(f1_path, dpi=300, bbox_inches="tight")
     plt.close()
 
-    # Figure 2
-    grid_scales = np.linspace(0.05, np.percentile(dist_mat, 96), 400)
-    cluster_profile = compute_transmission_profile(h0, grid_scales)
-    loop_profile = compute_transmission_profile(h1, grid_scales)
-
-    fig = plt.figure(figsize=(9.5, 6.5))
-    ax = fig.add_axes([0.10, 0.16, 0.82, 0.75])
-    ax.plot(grid_scales, cluster_profile, label="Independent Monastic & Epigraphic Traditions ($H_0$)", color="#1f618d", lw=2.4)
-    ax.plot(grid_scales, loop_profile, label="Inter-Regional Structural Circuits / Transmission Loops ($H_1$)", color="#c0392b", lw=2.4)
-    ax.set_title(f"Multi-Scale Cultural Integration Profile (N={total_count})", fontsize=11.5, fontweight="bold")
-    ax.set_xlabel("Cultural Distance Parameter ($\\epsilon$)", fontsize=10)
-    ax.set_ylabel("Structural Count", fontsize=10)
-    ax.legend(frameon=True, facecolor="#ffffff", edgecolor="#bdc3c7")
-    ax.grid(True, linestyle="--", alpha=0.5)
-    f2_path = os.path.join(figures_dir, "Fig2_Transmission_Profile.png")
-    plt.savefig(f2_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-    print(f"[02_persistent_homology] Saved {f1_path} and {f2_path}")
+    print(f"[02_persistent_homology] Saved persistence diagram to {f1_path}")
 
 
 if __name__ == "__main__":
